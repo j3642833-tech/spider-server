@@ -1,17 +1,15 @@
 {
   "name": "spider-royale-server",
   "version": "1.0.0",
-  "description": "Multiplayer server for Spider Royale",
+  "description": "Spider Game Server",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "socket.io": "^4.7.2",
-    "cors": "^2.8.5"
+    "ws": "^8.13.0"
   },
   "engines": {
-    "node": ">=14.0.0"
+    "node": ">=16.0.0"
   }
 }
