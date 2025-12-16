@@ -1,97 +1,103 @@
 const WebSocket = require('ws');
-
-// SETUP SERVER
 const port = process.env.PORT || 3000;
-const wss = new WebSocket.Server({ port }, () => {
-    console.log(`Spider Kingdom running on port ${port}`);
-});
+const wss = new WebSocket.Server({ port }, () => console.log(`Kingdom Active on ${port}`));
 
-// GAME VARIABLES
 let players = {};
+let items = []; // WE NOW HAVE ITEMS!
 let sockets = {};
 let nextId = 1;
+let itemIdCounter = 0;
+
+// Spawn Initial Items
+for(let i=0; i<100; i++) spawnItem();
+
+function spawnItem() {
+    items.push({
+        id: itemIdCounter++,
+        x: Math.random() * 4900 + 50,
+        y: Math.random() * 4900 + 50,
+        t: Math.floor(Math.random() * 5) // 0:Health, 1:Speed, 2:Shield, 3:Web, 4:Rope
+    });
+}
 
 wss.on('connection', (ws) => {
     const id = 'p' + nextId++;
     sockets[id] = ws;
-    console.log(`Player ${id} connected`);
 
-    ws.on('message', (message) => {
+    ws.on('message', (msg) => {
         try {
-            const data = JSON.parse(message);
+            const data = JSON.parse(msg);
 
-            // 1. JOIN - This is where the magic happens
+            // JOIN
             if (data.type === 'join') {
                 players[id] = {
-                    id: id,
-                    x: Math.random() * 2000 + 1000,
-                    y: Math.random() * 2000 + 1000,
-                    r: 60,
-                    name: data.name || "Spider",
-                    skin: data.skin || null,
-                    vip: data.vip || false, // It accepts 'false' for non-VIPs!
-                    kills: 0,
-                    angle: 0,
-                    dead: false,
-                    emoji: null,
-                    emojiTimer: 0
+                    id: id, x: Math.random()*2000+1000, y: Math.random()*2000+1000, r: 60,
+                    name: data.name, skin: data.skin, vip: data.vip, kills: 0, angle: 0,
+                    dead: false, emoji: null, emojiTimer: 0, atk: false, anim: 0
                 };
-                
-                // SEND INIT - This unlocks your spider!
-                ws.send(JSON.stringify({ 
-                    type: 'init', 
-                    id: id, 
-                    x: players[id].x, 
-                    y: players[id].y 
-                }));
+                ws.send(JSON.stringify({ type: 'init', id: id, x: players[id].x, y: players[id].y }));
             }
 
-            // 2. MOVE
+            // INPUT (Move + Atk)
             if (data.type === 'move' && players[id] && !players[id].dead) {
                 let p = players[id];
+                p.atk = data.atk; // Sync Biting
+                
                 if (data.dx || data.dy) {
                     p.angle = Math.atan2(data.dy, data.dx);
-                    let speed = Math.max(4, 8 - (p.r - 60) * 0.01);
+                    let speed = Math.max(4, 8 - (p.r-60)*0.01);
                     p.x += data.dx * speed;
                     p.y += data.dy * speed;
-                    // Boundaries
+                    p.anim += 0.2; // Server tracks animation progress
                     p.x = Math.max(0, Math.min(5000, p.x));
                     p.y = Math.max(0, Math.min(5000, p.y));
                 }
             }
-
-            // 3. EMOJI
-            if (data.type === 'emoji' && players[id]) {
+            
+            // EMOJI
+            if (data.type === 'emoji') {
                 players[id].emoji = data.index;
                 players[id].emojiTimer = 300;
             }
             
-            // 4. RESPAWN
-            if (data.type === 'respawn' && players[id]) {
+            // RESPAWN
+            if (data.type === 'respawn') {
                 players[id].dead = false;
-                players[id].x = Math.random() * 2000 + 1000;
-                players[id].y = Math.random() * 2000 + 1000;
+                players[id].x = Math.random()*2000+1000;
+                players[id].y = Math.random()*2000+1000;
             }
 
-        } catch (e) { console.error(e); }
+        } catch (e) {}
     });
 
-    ws.on('close', () => {
-        delete players[id];
-        delete sockets[id];
-    });
+    ws.on('close', () => { delete players[id]; delete sockets[id]; });
 });
 
-// GAME LOOP (60 FPS)
+// GAME LOOP
 setInterval(() => {
     let pack = [];
+    
+    // 1. Manage Items
+    if(items.length < 80) spawnItem();
+
     for (let id in players) {
         let p = players[id];
-        // Emoji Timer
-        if (p.emojiTimer > 0) { p.emojiTimer--; if(p.emojiTimer<=0) p.emoji=null; }
-        
-        // Simple Collision (Eat logic)
+        if(p.emojiTimer > 0) p.emojiTimer--; else p.emoji = null;
+
         if (!p.dead) {
+            // Collision with Items
+            for (let i = items.length - 1; i >= 0; i--) {
+                let it = items[i];
+                let dist = Math.hypot(p.x - it.x, p.y - it.y);
+                if (dist < p.r + 20) {
+                    // Item Collected!
+                    items.splice(i, 1);
+                    if(it.t === 0) p.r = Math.min(300, p.r + 5); // Grow
+                    // Logic for other buffs is handled visually on client for now
+                }
+            }
+
+            // Collision with Players
             for (let oid in players) {
                 if (id === oid) continue;
                 let o = players[oid];
@@ -99,17 +105,14 @@ setInterval(() => {
                 let dist = Math.hypot(p.x - o.x, p.y - o.y);
                 if (dist < p.r && p.r > o.r * 1.1) {
                     o.dead = true;
-                    p.r = Math.min(300, p.r + o.r * 0.2);
+                    p.r = Math.min(300, p.r + o.r * 0.25);
                     p.kills++;
                 }
             }
         }
         pack.push(p);
     }
-    
-    // SEND UPDATE TO ALL
-    const msg = JSON.stringify({ type: 'update', players: pack });
-    for (let id in sockets) {
-        if (sockets[id].readyState === WebSocket.OPEN) sockets[id].send(msg);
-    }
+
+    const updateMsg = JSON.stringify({ type: 'update', players: pack, items: items });
+    for (let id in sockets) { if (sockets[id].readyState === 1) sockets[id].send(updateMsg); }
 }, 1000 / 60);
