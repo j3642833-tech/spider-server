@@ -13,26 +13,27 @@ class Lobby {
         this.id = id;
         this.players = {};
         this.items = [];
-        this.projectiles = []; // Webs and Ropes flying
+        this.projectiles = [];
         this.sockets = {};
         this.itemCounter = 0;
         this.projCounter = 0;
+        this.tick = 0; // For timing updates
         for(let i=0; i<80; i++) this.spawnItem();
     }
 
     spawnItem() {
         let r = Math.random();
         let type = 0; 
-        if (r < 0.3) type = 3; // Web (30%)
-        else if (r < 0.6) type = 4; // Rope (30%)
-        else if (r < 0.8) type = 0; // Health (20%)
-        else if (r < 0.9) type = 1; // Speed (10%)
-        else type = 2; // Shield (10%)
+        if (r < 0.3) type = 3; // Web
+        else if (r < 0.6) type = 4; // Rope
+        else if (r < 0.8) type = 0; // Health
+        else if (r < 0.9) type = 1; // Speed
+        else type = 2; // Shield
 
         this.items.push({
             id: this.itemCounter++,
-            x: Math.random() * (MAP_SIZE - 200) + 100,
-            y: Math.random() * (MAP_SIZE - 200) + 100,
+            x: Math.floor(Math.random() * (MAP_SIZE - 200) + 100),
+            y: Math.floor(Math.random() * (MAP_SIZE - 200) + 100),
             t: type
         });
     }
@@ -64,15 +65,14 @@ wss.on('connection', (ws) => {
                     name: data.name, skin: data.skin, vip: data.vip, kills: 0,
                     angle: 0, anim: 0, atk: false, dead: false, emoji: null,
                     hp: 100, maxHp: 100, web: 0, rope: 0, spdTime: 0, shdTime: 0, stun: 0,
-                    ropeTargetId: null, ropeState: 0 // 0:None, 1:Pulling
+                    ropeTargetId: null, ropeState: 0
                 };
-                ws.send(JSON.stringify({ type:'init', id:id, x:myLobby.players[id].x, y:myLobby.players[id].y }));
+                // Send Init (and force item load)
+                ws.send(JSON.stringify({ type:'init', id:id, x:myLobby.players[id].x, y:myLobby.players[id].y, items:myLobby.items }));
             }
 
             if (data.type === 'move' && p && !p.dead) {
                 p.atk = data.atk;
-                
-                // Only move if NOT stunned
                 if(p.stun <= 0) {
                     if(data.dx || data.dy) {
                         p.angle = Math.atan2(data.dy, data.dx);
@@ -90,36 +90,27 @@ wss.on('connection', (ws) => {
             }
             
             if(data.type === 'action' && p && !p.dead && p.stun <= 0) {
-                // WEB SHOOT
                 if(data.action === 'web') {
                     if (p.web > 0 || p.r >= 200) {
                         if(p.r < 200) p.web--;
                         myLobby.projectiles.push({
                             id: myLobby.projCounter++, type: 'web', owner: id,
-                            x: p.x, y: p.y, 
+                            x: Math.floor(p.x), y: Math.floor(p.y), 
                             vx: Math.cos(p.angle) * 25, vy: Math.sin(p.angle) * 25,
-                            life: 60 // 3 seconds
+                            life: 45 // 3 sec at 15 TPS
                         });
                     }
                 }
-                
-                // ROPE SHOOT / CANCEL
                 if(data.action === 'rope') {
-                    // If already pulling, cancel
-                    if(p.ropeTargetId) {
-                        p.ropeTargetId = null;
-                        p.ropeState = 0;
-                    } 
-                    // Else shoot
+                    if(p.ropeTargetId) { p.ropeTargetId = null; p.ropeState = 0; } 
                     else if (p.rope > 0 || p.r >= 200) {
                         if(p.r < 200) p.rope--;
                         myLobby.projectiles.push({
                             id: myLobby.projCounter++, type: 'rope', owner: id,
-                            x: p.x, y: p.y, 
+                            x: Math.floor(p.x), y: Math.floor(p.y), 
                             vx: Math.cos(p.angle) * 30, vy: Math.sin(p.angle) * 30,
-                            life: 40 // 2 seconds range
+                            life: 30
                         });
-                        // Tell client cooldown started
                         ws.send(JSON.stringify({ type: 'cooldown', skill: 'rope' }));
                     }
                 }
@@ -139,44 +130,36 @@ wss.on('connection', (ws) => {
     });
 });
 
-// GAME LOOP (20 TPS)
+// GAME LOOP - 15 TPS (Low Latency)
 setInterval(() => {
     lobbies.forEach(lobby => {
+        lobby.tick++;
+        let sendItems = (lobby.tick % 30 === 0); // Send items ONLY every 2 seconds
         let pack = [];
+        
         if(lobby.items.length < 50) lobby.spawnItem();
 
-        // 1. PROJECTILES
+        // Projectiles
         for(let i=lobby.projectiles.length-1; i>=0; i--) {
             let proj = lobby.projectiles[i];
-            proj.x += proj.vx;
-            proj.y += proj.vy;
-            proj.life--;
-
-            // Hit Check
+            proj.x += proj.vx; proj.y += proj.vy; proj.life--;
+            
             for(let pid in lobby.players) {
                 let hitP = lobby.players[pid];
                 if(hitP.dead || pid === proj.owner) continue;
-                
                 if(Math.hypot(proj.x - hitP.x, proj.y - hitP.y) < hitP.r) {
-                    // HIT!
-                    if(proj.type === 'web') {
-                        hitP.stun = 100; // 5 Secs (20 ticks * 5)
-                    }
+                    if(proj.type === 'web') hitP.stun = 75; // 5 Secs
                     if(proj.type === 'rope') {
                         let owner = lobby.players[proj.owner];
-                        if(owner) {
-                            owner.ropeTargetId = pid;
-                            owner.ropeState = 1;
-                        }
+                        if(owner) { owner.ropeTargetId = pid; owner.ropeState = 1; }
                     }
-                    proj.life = 0; // Destroy projectile
-                    break;
+                    proj.life = 0; break;
                 }
             }
             if(proj.life <= 0) lobby.projectiles.splice(i, 1);
         }
 
-        // 2. PLAYERS
+        // Players
         for (let id in lobby.players) {
             let p = lobby.players[id];
             if(p.stun > 0) p.stun--;
@@ -184,34 +167,24 @@ setInterval(() => {
             if(p.shdTime > 0) p.shdTime--;
 
             if (!p.dead) {
-                // Rope Physics
+                // Ropes
                 if(p.ropeTargetId) {
                     let target = lobby.players[p.ropeTargetId];
-                    if(!target || target.dead) {
-                        p.ropeTargetId = null; 
-                    } else {
+                    if(!target || target.dead) p.ropeTargetId = null; 
+                    else {
                         let angle = Math.atan2(target.y - p.y, target.x - p.x);
                         let dist = Math.hypot(target.x - p.x, target.y - p.y);
-                        
-                        // Pull Logic
                         if(dist > p.r + target.r) {
-                            let pullSpd = 15;
-                            if(p.r > target.r) { // Pull target to me
-                                target.x -= Math.cos(angle) * pullSpd;
-                                target.y -= Math.sin(angle) * pullSpd;
-                            } else if (p.r < target.r) { // Pull me to target
-                                p.x += Math.cos(angle) * pullSpd;
-                                p.y += Math.sin(angle) * pullSpd;
-                            } else { // Pull both
-                                p.x += Math.cos(angle) * (pullSpd/2);
-                                p.y += Math.sin(angle) * (pullSpd/2);
-                                target.x -= Math.cos(angle) * (pullSpd/2);
-                                target.y -= Math.sin(angle) * (pullSpd/2);
+                            let pull = 15;
+                            if(p.r > target.r) { target.x -= Math.cos(angle)*pull; target.y -= Math.sin(angle)*pull; }
+                            else if (p.r < target.r) { p.x += Math.cos(angle)*pull; p.y += Math.sin(angle)*pull; }
+                            else { 
+                                p.x += Math.cos(angle)*(pull/2); p.y += Math.sin(angle)*(pull/2);
+                                target.x -= Math.cos(angle)*(pull/2); target.y -= Math.sin(angle)*(pull/2);
                             }
                         } else {
-                            // Arrived
-                            if(target.r < p.r) target.stun = 60; // Stun small spider 3s
-                            p.ropeTargetId = null; // Break rope
+                            if(target.r < p.r) target.stun = 45; // 3 sec stun
+                            p.ropeTargetId = null;
                         }
                     }
                 }
@@ -221,35 +194,38 @@ setInterval(() => {
                     let it = lobby.items[i];
                     if (Math.hypot(p.x - it.x, p.y - it.y) < p.r + 30) {
                         lobby.items.splice(i, 1);
-                        if(it.t === 0) p.hp = Math.min(p.maxHp, p.hp+30);
-                        if(it.t === 1) p.spdTime = 100; // 5s Speed
-                        if(it.t === 2) p.shdTime = 100; // 5s Shield
+                        if(it.t === 0) p.hp = Math.min(p.maxHp, p.hp+30); // HP only
+                        if(it.t === 1) p.spdTime = 75; // 5s Speed
+                        if(it.t === 2) p.shdTime = 75; // 5s Shield
                         if(it.t === 3) p.web += 3;
                         if(it.t === 4) p.rope += 1;
                     }
                 }
                 
-                // Combat
+                // Combat (GROWTH HERE ONLY)
                 for (let oid in lobby.players) {
                     if (id === oid) continue;
                     let o = lobby.players[oid];
-                    if (o.dead || o.shdTime > 0) continue; // Shield blocks kill
+                    if (o.dead || o.shdTime > 0) continue;
                     
                     if (Math.hypot(p.x - o.x, p.y - o.y) < p.r && p.r > o.r * 1.2) {
                         o.dead = true;
-                        p.r = Math.min(300, p.r + o.r * 0.4); // Grow ONLY on kill
+                        p.r = Math.min(300, p.r + o.r * 0.4); // GROW
                         p.kills++;
                         p.hp = Math.min(p.maxHp, p.hp + 50);
                     }
                 }
             }
+            
+            // Round Integers for Bandwidth
+            p.x = Math.round(p.x); p.y = Math.round(p.y);
             pack.push(p);
         }
 
         const msg = JSON.stringify({ 
             type: 'update', 
             players: pack, 
-            items: lobby.items,
+            items: sendItems ? lobby.items : null, // OPTIMIZATION: Only send items sometimes
             projs: lobby.projectiles 
         });
         
@@ -257,4 +233,4 @@ setInterval(() => {
             if (lobby.sockets[id].readyState === WebSocket.OPEN) lobby.sockets[id].send(msg);
         }
     });
-}, 1000 / 20); // 20 TPS for Mobile Performance
+}, 1000 / 15); // 15 TPS
