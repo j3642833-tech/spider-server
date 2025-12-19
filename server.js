@@ -5,7 +5,7 @@ const port = process.env.PORT || 3000;
 const wss = new WebSocket.Server({ port }, () => console.log(`Kingdom active on ${port}`));
 
 const MAX_PLAYERS = 30;
-const MAP_SIZE = 5000; // Fixed Map Size
+const MAP_SIZE = 5000;
 let lobbies = [];
 
 class Lobby {
@@ -19,12 +19,11 @@ class Lobby {
     }
 
     spawnItem() {
-        // BETTER RNG: 30% Web, 30% Rope, 20% Health, 10% Speed, 10% Shield
         let r = Math.random();
-        let type = 0; // Default Health
+        let type = 0; 
         if (r < 0.3) type = 3; // Web
         else if (r < 0.6) type = 4; // Rope
-        else if (r < 0.8) type = 0; // Health/Mass
+        else if (r < 0.8) type = 0; // Health
         else if (r < 0.9) type = 1; // Speed
         else type = 2; // Shield
 
@@ -77,11 +76,8 @@ wss.on('connection', (ws) => {
                     p.y += data.dy * speed;
                     p.anim += 0.3;
                     
-                    // SERVER SIDE HARD WALL (Clamp)
-                    if(p.x < 50) p.x = 50;
-                    if(p.y < 50) p.y = 50;
-                    if(p.x > MAP_SIZE - 50) p.x = MAP_SIZE - 50;
-                    if(p.y > MAP_SIZE - 50) p.y = MAP_SIZE - 50;
+                    if(p.x < 50) p.x = 50; if(p.y < 50) p.y = 50;
+                    if(p.x > MAP_SIZE - 50) p.x = MAP_SIZE - 50; if(p.y > MAP_SIZE - 50) p.y = MAP_SIZE - 50;
                 }
             }
             
@@ -103,6 +99,7 @@ wss.on('connection', (ws) => {
     });
 });
 
+// GAME LOOP - REDUCED TO 20 FPS FOR LESS LAG
 setInterval(() => {
     lobbies.forEach(lobby => {
         let pack = [];
@@ -120,11 +117,11 @@ setInterval(() => {
                     let it = lobby.items[i];
                     if (Math.hypot(p.x - it.x, p.y - it.y) < p.r + 30) {
                         lobby.items.splice(i, 1);
-                        if(it.t === 0) { p.hp = Math.min(p.maxHp, p.hp+30); p.r += 2; } // Grow only on HP
+                        if(it.t === 0) { p.hp = Math.min(p.maxHp, p.hp+30); p.r += 2; }
                         if(it.t === 1) p.spdTime = 300; 
                         if(it.t === 2) p.shdTime = 300;
-                        if(it.t === 3) p.web += 5; // Give 5 Webs
-                        if(it.t === 4) p.rope += 2; // Give 2 Ropes
+                        if(it.t === 3) p.web += 5;
+                        if(it.t === 4) p.rope += 2;
                     }
                 }
                 
@@ -148,4 +145,4 @@ setInterval(() => {
             if (lobby.sockets[id].readyState === WebSocket.OPEN) lobby.sockets[id].send(msg);
         }
     });
-}, 1000 / 60);
+}, 1000 / 20); // CHANGED 60 TO 20
